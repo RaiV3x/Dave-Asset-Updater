@@ -1,0 +1,13 @@
+.venv/
+.pyinstaller-cache/
+.env
+build/
+dist/
+*.spec
+logs/
+state/
+__pycache__/
+*.py[cod]
+
+# The migrated/downloaded game assets are intentionally not committed.
+data/

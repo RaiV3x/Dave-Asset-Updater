@@ -1,0 +1,5 @@
+msgpack
+Pillow
+pycryptodome
+requests
+UnityPy>=1.25.0,<2.0.0

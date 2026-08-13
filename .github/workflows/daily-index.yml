@@ -1,0 +1,200 @@
+name: Build and release
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 19 * * *"
+      timezone: "Asia/Shanghai"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dave-daily-release
+  cancel-in-progress: false
+
+jobs:
+  build-index:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DAVE_CN_CDN: ${{ secrets.DAVE_CN_CDN }}
+      DAVE_CN_VERSION_CDN: ${{ secrets.DAVE_CN_VERSION_CDN }}
+      DAVE_CN_RELEASE_PATH: ${{ secrets.DAVE_CN_RELEASE_PATH }}
+      DAVE_API_KEY_HEX: ${{ secrets.DAVE_API_KEY_HEX }}
+      DAVE_API_IV_HEX: ${{ secrets.DAVE_API_IV_HEX }}
+      DAVE_APP_HASH: ${{ secrets.DAVE_APP_HASH }}
+      DAVE_APP_VERSION: ${{ vars.DAVE_APP_VERSION }}
+      DAVE_AB_VERSION: ${{ vars.DAVE_AB_VERSION }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Build current index
+        run: python updater.py --index-only --skip-extract
+
+      - name: Validate index
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("data/AssetBundleInfo.dave.json")
+          value = json.loads(path.read_text(encoding="utf-8"))
+          count = len(value.get("bundles", {}))
+          if count < 1000:
+              raise SystemExit(f"Unexpected bundle count: {count}")
+          print(f"Index contains {count} bundles")
+          PY
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: dave-index
+          path: data/AssetBundleInfo.dave.json
+          if-no-files-found: error
+
+  build-packages:
+    name: Package ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            os: windows-latest
+            python_arch: x64
+            asset: Dave-Asset-Toolkit-windows-x64.exe
+            package: exe
+            experimental: false
+          - platform: windows-x86
+            os: windows-latest
+            python_arch: x86
+            asset: Dave-Asset-Toolkit-windows-x86.exe
+            package: exe
+            experimental: false
+          - platform: linux-x64
+            os: ubuntu-24.04
+            python_arch: x64
+            asset: Dave-Asset-Toolkit-linux-x64.tgz
+            package: tgz
+            experimental: false
+          - platform: linux-arm64
+            os: ubuntu-24.04-arm
+            python_arch: arm64
+            asset: Dave-Asset-Toolkit-linux-arm64.tgz
+            package: tgz
+            experimental: false
+          - platform: macos-x64
+            os: macos-15-intel
+            python_arch: x64
+            asset: Dave-Asset-Toolkit-macos-x64.tgz
+            package: tgz
+            experimental: false
+          - platform: macos-arm64
+            os: macos-15
+            python_arch: arm64
+            asset: Dave-Asset-Toolkit-macos-arm64.tgz
+            package: tgz
+            experimental: false
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          architecture: ${{ matrix.python_arch }}
+          cache: pip
+
+      - name: Install build dependencies
+        run: python -m pip install -r requirements.txt "pyinstaller>=6.21,<7"
+
+      - name: Build Windows executable
+        if: matrix.package == 'exe'
+        shell: pwsh
+        run: |
+          python -m PyInstaller --clean --noconfirm --onefile `
+            --name Dave-Asset-Toolkit `
+            --add-data "config.json;." `
+            --add-data ".env.example;." `
+            --collect-all UnityPy `
+            dave_toolkit.py
+          Move-Item -LiteralPath "dist\Dave-Asset-Toolkit.exe" -Destination "dist\${{ matrix.asset }}"
+
+      - name: Test Windows executable
+        if: matrix.package == 'exe'
+        shell: pwsh
+        run: '& "dist\${{ matrix.asset }}" --help'
+
+      - name: Build Unix executable and archive
+        if: matrix.package == 'tgz'
+        shell: bash
+        run: |
+          python -m PyInstaller --clean --noconfirm --onefile \
+            --name Dave-Asset-Toolkit \
+            --add-data "config.json:." \
+            --add-data ".env.example:." \
+            --collect-all UnityPy \
+            dave_toolkit.py
+          mkdir -p package
+          cp dist/Dave-Asset-Toolkit package/
+          cp config.json .env.example LICENSE README.md package/
+          chmod +x package/Dave-Asset-Toolkit
+          tar -czf "dist/${{ matrix.asset }}" -C package .
+
+      - name: Test Unix executable
+        if: matrix.package == 'tgz'
+        shell: bash
+        run: dist/Dave-Asset-Toolkit --help
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: package-${{ matrix.platform }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs:
+      - build-index
+      - build-packages
+
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd release
+          sha256sum * > SHA256SUMS.txt
+          ls -lh
+
+      - name: Publish dated Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          release_title="Release $(TZ=Asia/Shanghai date +%F)"
+          release_notes="Automated index and portable Dave Asset Toolkit builds."
+          if gh release view latest-index >/dev/null 2>&1; then
+            gh release edit latest-index --title "$release_title" --notes "$release_notes"
+          else
+            gh release create latest-index \
+              --title "$release_title" \
+              --notes "$release_notes" \
+              --latest=false
+          fi
+          gh release upload latest-index release/* --clobber

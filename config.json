@@ -1,0 +1,41 @@
+{
+  "app": {
+    "platform": "android",
+    "region": "cn",
+    "version": "6.0.2",
+    "app_hash": "",
+    "ab_version": "6.0.0"
+  },
+  "download": {
+    "workers": 2,
+    "ensure_dependencies": false
+  },
+  "extract": {
+    "enabled": true,
+    "auto_after_update": true,
+    "unity_version": "2022.3.21f1",
+    "workers": 4,
+    "ledger_save_every": 25,
+    "image_format": "png",
+    "types": [
+      "MonoBehaviour",
+      "TextAsset",
+      "Texture2D",
+      "Sprite",
+      "AudioClip",
+      "Font",
+      "Shader"
+    ]
+  },
+  "schedule": {
+    "daily_at": "04:00"
+  },
+  "paths": {
+    "database": "data/dave-index.sqlite3",
+    "index": "data/AssetBundleInfo.dave.json",
+    "bundles": "data/bundles",
+    "extracted": "data/extracted",
+    "state": "state",
+    "logs": "logs"
+  }
+}
